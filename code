@@ -1,0 +1,164 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
+#交叉验证和数据集分割函数
+from sklearn.model_selection import KFold, cross_val_score,train_test_split
+#各种回归方法
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.svm import SVR
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import AdaBoostRegressor
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.ensemble import BaggingRegressor
+from sklearn.tree import ExtraTreeRegressor
+from sklearn.kernel_ridge import KernelRidge
+from sklearn.preprocessing import RobustScaler
+from sklearn.linear_model import ElasticNet, Lasso
+from sklearn.pipeline import make_pipeline
+from lightgbm import LGBMRegressor
+from sklearn.utils import shuffle
+from math import sqrt
+
+df = pd.read_excel('Ocorrode2.xlsx')
+df = shuffle(df)
+X = df.iloc[:, :-1]
+Y = df.iloc[:, -1]
+
+cut = 44
+X_train, X_test = X.iloc[:-cut].values, X.iloc[-cut:].values
+Y_train, Y_test = Y.iloc[:-cut].values, Y.iloc[-cut:].values
+
+#name需要与regressors一一对应
+names = ['Decision Tree', 'Linear Regression', 'SVR', 'KNN', 'RFR', 'Ada Boost',
+    'Gradient Boost', 'Bagging', 'Extra Tree','KRR','lgb']
+regressors = [
+    DecisionTreeRegressor(),
+    LinearRegression(),
+    SVR(gamma='scale'),
+    KNeighborsRegressor(),
+    RandomForestRegressor(),
+    AdaBoostRegressor(),
+    GradientBoostingRegressor(),
+    BaggingRegressor(),
+    ExtraTreeRegressor(),
+    #make_pipeline(RobustScaler(), Lasso()),
+    #make_pipeline(RobustScaler(), ElasticNet()),
+    KernelRidge(),
+    LGBMRegressor(objective='regression')
+]
+
+def try_different_method(tmp_name,model):
+    model.fit(X_train,Y_train)
+    # 原生实现
+    # 衡量线性回归的MSE 、 RMSE、 MAE、r2
+    result = model.predict(X_test)
+    mse = np.sum((Y_test - result) ** 2) / len(Y_test)
+    rmse = sqrt(mse)
+    mae = np.sum(np.absolute(Y_test - result)) / len(Y_test)
+    r2 = 1 - mse / np.var(Y_test)  # 均方误差/方差
+    print(" mae:", mae, " rmse:", rmse, " r2:", r2)
+
+    #score = model.score(X_test, Y_test) # score为拟合优度，越大，说明x对y的解释程度越高
+    #result = model.predict(X_test)
+    #plt.figure()
+    plt.plot(np.arange(len(result)), sorted(Y_test,reverse=False),'g-',label='true value')
+    plt.plot(np.arange(len(result)),sorted(result,reverse=False),'r-',label='predict value')
+    plt.xlabel('samples')
+    plt.ylabel('Weight_gain(μg/$\mathregular{cm^2}$)')
+    plt.title('%s r2: %f' % (tmp_name,r2))
+    plt.legend()
+
+plt.figure(figsize=(24, 20))
+sns.set_style("white")
+for i in range(0,11):
+    ax = plt.subplot(3,4,i+1)
+    plt.xlim(0,40) # 这里只选择绘图展示前20个数据的拟合效果，但score是全部验证数据的得分
+    try_different_method(names[i],regressors[i])
+plt.savefig('O1.png')
+plt.show()
+
+#定义cv 10折交叉验证的rmse验证方法
+def cross_val(model):
+    rmse= np.sqrt(-cross_val_score(model, X_train, Y_train, scoring="neg_mean_squared_error", cv = 10))
+    return(rmse) # 结果越小越好
+
+#定义combine交叉验证方法函数
+def comb_cross_val(method_list):
+    li=[]
+    for i in method_list:
+        tmp_li = names.index(i)
+        li.append(tmp_li)
+    cv = 10
+    x=np.tile(np.array(range(0,cv)),len(method_list))  # 重复n次x数组
+    y=np.array([])
+    method = []
+    for i in li:
+        y = np.append(y,cross_val(regressors[i]))
+        method = method + [names[i]] * cv
+    ss=pd.DataFrame({'x':x,'y':y, 'method':method})
+    return(ss)
+
+method_list = ['Decision Tree', 'RFR', 'Gradient Boost', 'Bagging', 'Extra Tree'] #需要与names中的名称对应
+ss = comb_cross_val(method_list)
+fig, ax = plt.subplots(figsize=(8,4))
+sns.lineplot(x=ss['x'],y=ss['y'],hue=ss['method'])
+#打印rmse
+lmse=list(ss['y'])
+for j in range(5):
+    amse=0
+    for i in range(10):
+        amse=amse+lmse[10*j+i]
+    print(amse/10)
+
+ax.legend_.remove()
+ax.legend(loc='best')
+plt.xlabel('Number of validation')
+plt.ylabel('RMSE')
+plt.title('均方根误差比较',fontproperties="SimHei")
+plt.savefig('O2.png')
+plt.show()
+
+from sklearn.model_selection import GridSearchCV
+from sklearn import metrics
+# 构造rmsle评估方法（注意格式输入时两个参数，真实值在前，预测值在后，默认会进行log变换）
+def rmsle(y_true, y_pred, convertExp=True):
+    # Apply exponential transformation function
+    if convertExp:  # 这个当时的例子将y进行了log变换，所以结果会先变换回去，可根据实际情况进行修改
+        y_true = np.expm1(y_true)
+        y_pred = np.expm1(y_pred)
+        # Convert missing value to zero after log transformation
+    log_true = np.nan_to_num(np.array([np.log1p(y) for y in y_true]))
+    log_pred = np.nan_to_num(np.array([np.log1p(y) for y in y_pred]))
+    # Compute RMSLE
+    output = np.sqrt(np.mean((log_true - log_pred) ** 2))
+    return output
+
+
+# 构造GridSearchCV评估方法，此处利用上述的rmsle评估作为下述网格交叉验证中的评估方法
+rmsle_scorer = metrics.make_scorer(rmsle, greater_is_better=False)  # 越小越好
+
+
+# 构造基于GridSearchCV的结果打印功能
+class grid():
+    def __init__(self, model):
+        self.model = model
+
+    def grid_get(self, X, y, param_grid):
+        grid_search = GridSearchCV(self.model, param_grid, cv=5, scoring=rmsle_scorer, n_jobs=-1)  # n_jobs调用所有核并行计算
+        grid_search.fit(X, y)
+        # 这里为了方便比较mean_test_score，同一取负值并开方
+        print('Best params is ', grid_search.best_params_, np.sqrt(-grid_search.best_score_))  # 打印最优参数
+        grid_search.cv_results_['mean_test_score'] = np.sqrt(-grid_search.cv_results_['mean_test_score'])
+        pd.set_option('display.max_columns', None)  # 显示所有列
+        pd.set_option('max_colwidth', 100)  # 设置列的显示长度为100，默认为50
+        print(pd.DataFrame(grid_search.cv_results_)[['params', 'mean_test_score', 'std_test_score']])  # 打印所有结果
+
+
+# 以extratrees为例进行调参，可更改为其他方法，变更grid()内函数即可
+# 这里的np.log1p(y_train)是为了保证y_train值尽量贴近正态分布，利于回归拟合，请根据实际情况进行调整
+# 同时，np.log1p(y_train)的处理也是为了和rmsle评估函数的功能对应起来，因为该函数默认会先进行log变换回去（convertExp=True）
+grid(ExtraTreeRegressor()).grid_get(X_train, np.log1p(Y_train),
+                                       {'max_depth': [40], 'max_leaf_nodes': [60, 40, 20]})  # 随机森林
